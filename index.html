@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VewertyPloik Chess</title>
+<style>
+body { margin:0; font-family:sans-serif; background:#111; color:#eee; display:flex; flex-direction:column; align-items:center; }
+h1 { margin:10px; font-size:24px; }
+#controls { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-bottom:10px; }
+.btn { padding:10px 16px; border:none; border-radius:8px; background:#333; color:#eee; font-size:16px; min-width:100px; touch-action: manipulation; }
+.btn:active { transform:translateY(1px); }
+#board { display:grid; grid-template-columns:repeat(8,48px); grid-template-rows:repeat(8,48px); gap:0; touch-action: none; }
+.cell { width:48px; height:48px; display:flex; justify-content:center; align-items:center; font-size:32px; user-select:none; }
+.lightblue { background:#ADD8E6; } 
+.green { background:#2e7d32; } 
+.highlight { outline: 3px solid yellow; }
+#status { margin-top:10px; min-height:24px; text-align:center; font-weight:bold; }
+#error { color:#ff6b6b; min-height:20px; text-align:center; margin-top:4px; }
+#settingsPanel { display:none; position:absolute; top:70px; right:10px; background:#222; padding:10px; border-radius:10px; text-align:left; }
+@media(max-width:400px){ #board .cell{ width:36px; height:36px; font-size:24px; } }
+</style>
+</head>
+<body>
+<h1>♟ Vewerty Ploik Chess</h1>
+<div id="controls">
+<button class="btn" id="btnRestart">♻ Restart</button>
+<button class="btn" id="btnAI">🤖 Play vs AI</button>
+<button class="btn" id="btnFriend">👥 Pass & Play</button>
+<button class="btn" id="btnAllGone">🎯 All Tokens</button>
+<button class="btn" id="btnSettings">⚙ Settings</button>
+</div>
+<div id="board"></div>
+<div id="status"></div>
+<div id="error"></div>
+<div id="settingsPanel">
+<h3>AI Stats</h3>
+<div id="stats"></div>
+<button class="btn" id="btnCloseSettings">Close</button>
+</div>
+
+<script>
+const unicodePieces = {
+'K':'♔','Q':'♕','R':'♖','B':'♗','N':'♘','P':'♙',
+'k':'♚','q':'♛','r':'♜','b':'♝','n':'♞','p':'♟'
+};
+
+let boardEl = document.getElementById('board');
+let statusEl = document.getElementById('status');
+let errorEl = document.getElementById('error');
+let btnRestart = document.getElementById('btnRestart');
+let btnAI = document.getElementById('btnAI');
+let btnFriend = document.getElementById('btnFriend');
+let btnAllGone = document.getElementById('btnAllGone');
+let btnSettings = document.getElementById('btnSettings');
+let settingsPanel = document.getElementById('settingsPanel');
+let statsDiv = document.getElementById('stats');
+let btnCloseSettings = document.getElementById('btnCloseSettings');
+
+let game = [];
+let selected = null;
+let turn='w';
+let mode='friend';
+let aiDifficulty='easy';
+let gameOver=false;
+let allGoneMode=false;
+
+// Load stats from localStorage
+let stats = JSON.parse(localStorage.getItem('chessStats') || '{"easy":{"played":0,"wins":0},"medium":{"played":0,"wins":0},"hard":{"played":0,"wins":0},"all_easy":{"played":0,"wins":0},"all_medium":{"played":0,"wins":0},"all_hard":{"played":0,"wins":0}}');
+function saveStats(){ localStorage.setItem('chessStats', JSON.stringify(stats)); }
+
+// Initialize board
+function initGame(){
+  gameOver=false;
+  game = [
+    ['r','n','b','q','k','b','n','r'],
+    ['p','p','p','p','p','p','p','p'],
+    ['.','.','.','.','.','.','.','.'],
+    ['.','.','.','.','.','.','.','.'],
+    ['.','.','.','.','.','.','.','.'],
+    ['.','.','.','.','.','.','.','.'],
+    ['P','P','P','P','P','P','P','P'],
+    ['R','N','B','Q','K','B','N','R']
+  ];
+  selected = null;
+  turn='w';
+  renderBoard();
+  updateStatus();
+  errorEl.textContent='';
+
+  if(mode==='ai' && !allGoneMode){ stats[aiDifficulty].played++; saveStats(); }
+  if(allGoneMode){ stats['all_'+aiDifficulty].played++; saveStats(); }
+}
+
+// Render board
+function renderBoard(){
+  boardEl.innerHTML='';
+  for(let y=0;y<8;y++){
+    for(let x=0;x<8;x++){
+      let cell = document.createElement('div');
+      cell.classList.add('cell');
+      cell.classList.add((x+y)%2===0?'lightblue':'green');
+      cell.dataset.x=x; cell.dataset.y=y;
+      let p = game[y][x];
+      if(p!=='.'){ cell.textContent = unicodePieces[p]; cell.style.color = (p===p.toUpperCase()?'white':'black'); }
+      cell.addEventListener('click',()=>onCellClick(x,y));
+      boardEl.appendChild(cell);
+    }
+  }
+}
+
+function pathClear(x1,y1,x2,y2){
+  let dx = Math.sign(x2-x1);
+  let dy = Math.sign(y2-y1);
+  let cx = x1 + dx;
+  let cy = y1 + dy;
+  while(cx !== x2 || cy !== y2){
+    if(game[cy][cx] !== '.') return false;
+    cx += dx;
+    cy += dy;
+  }
+  return true;
+}
+
+function isLegalMove(fromX, fromY, toX, toY){
+  if(gameOver) return false;
+  let piece = game[fromY][fromX];
+  if(piece === '.') return false;
+  let color = piece === piece.toUpperCase() ? 'w' : 'b';
+  if(color !== turn) return false;
+  let target = game[toY][toX];
+  if(target !== '.'){
+    let tColor = target === target.toUpperCase() ? 'w' : 'b';
+    if(tColor === color) return false;
+  }
+
+  let dx = toX - fromX;
+  let dy = toY - fromY;
+  let absX = Math.abs(dx);
+  let absY = Math.abs(dy);
+
+  switch(piece.toLowerCase()){
+    case 'p': // Pawn
+      if(color==='w'){
+        if(dx===0 && dy===-1 && target=='.') return true;
+        if(dx===0 && dy===-2 && fromY===6 && game[fromY-1][fromX]==='.' && target=='.') return true;
+        if(absX===1 && dy===-1 && target!=='.' && target===target.toLowerCase()) return true;
+      } else {
+        if(dx===0 && dy===1 && target=='.') return true;
+        if(dx===0 && dy===2 && fromY===1 && game[fromY+1][fromX]==='.' && target=='.') return true;
+        if(absX===1 && dy===1 && target!=='.' && target===target.toUpperCase()) return true;
+      }
+      break;
+    case 'n': // Knight
+      if((absX===2 && absY===1) || (absX===1 && absY===2)) return true;
+      break;
+    case 'b': // Bishop
+      if(absX===absY) return pathClear(fromX, fromY, toX, toY);
+      break;
+    case 'r': // Rook
+      if(dx===0 || dy===0) return pathClear(fromX, fromY, toX, toY);
+      break;
+    case 'q': // Queen
+      if(dx===0 || dy===0 || absX===absY) return pathClear(fromX, fromY, toX, toY);
+      break;
+    case 'k': // King
+      if(absX <= 1 && absY <= 1) return true;
+      break;
+  }
+
+  return false;
+}
+
+function onCellClick(x,y){
+  if(gameOver) return;
+  let piece=game[y][x];
+  if(selected===null){
+    if(piece==='.') return;
+    if((piece===piece.toUpperCase() && turn==='w') || (piece===piece.toLowerCase() && turn==='b')) selected={x,y};
+    renderBoard(); highlightCell(selected.x,selected.y);
+  } else {
+    let fromX=selected.x, fromY=selected.y;
+    if(isLegalMove(fromX,fromY,x,y)){
+      let captured=game[y][x];
+      game[y][x]=game[fromY][fromX]; game[fromY][fromX]='.'; selected=null; renderBoard(); errorEl.textContent='';
+
+      if(!allGoneMode && captured.toLowerCase()==='k'){ gameOver=true;
+        if(turn==='w' && mode==='ai'){ stats[aiDifficulty].wins++; saveStats(); }
+        alert((turn==='w'?'White':'Black')+" wins! King captured.");
+        updateStatus(); return;
+      }
+
+      if(allGoneMode && countPieces('w')===0){ gameOver=true; alert("Black wins! All White pieces gone."); if(mode==='ai') stats['all_'+aiDifficulty].wins++; saveStats(); updateStatus(); return; }
+      if(allGoneMode && countPieces('b')===0){ gameOver=true; alert("White wins! All Black pieces gone."); if(mode==='ai') stats['all_'+aiDifficulty].wins++; saveStats(); updateStatus(); return; }
+
+      turn=turn==='w'?'b':'w'; updateStatus();
+      if(mode==='ai') setTimeout(()=>aiMove(),200);
+    } else { errorEl.textContent='❌ Illegal move'; selected=null; renderBoard(); }
+  }
+}
+
+function highlightCell(x,y){ boardEl.querySelectorAll('.cell').forEach(c=>{ if(c.dataset.x==x && c.dataset.y==y) c.classList.add('highlight'); }); }
+function updateStatus(){ statusEl.textContent = gameOver ? "Game Over" : (turn==='w'?'White':'Black') + " to move"; }
+function countPieces(color){ return game.flat().filter(p=>p!=='.' && ((p===p.toUpperCase() && color==='w')||(p===p.toLowerCase() && color==='b'))).length; }
+
+// AI
+function aiMove(){
+  if(gameOver) return;
+  let moves=[];
+  for(let y=0;y<8;y++){ for(let x=0;x<8;x++){
+    let p=game[y][x]; if(p!=='.' && p===p.toLowerCase()){ for(let ty=0;ty<8;ty++){ for(let tx=0;tx<8;tx++){ if(isLegalMove(x,y,tx,ty)) moves.push({x,y,tx,ty}); }}}}}
+  if(moves.length===0) return;
+
+  let chosen;
+  if(aiDifficulty==='easy') {
+    let captureMoves = moves.filter(m=>game[m.ty][m.tx]!=='.');
+    chosen = captureMoves.length ? captureMoves[Math.floor(Math.random()*captureMoves.length)] : moves[Math.floor(Math.random()*moves.length)];
+  }
+  else if(aiDifficulty==='medium'){
+    let caps = moves.filter(m=>game[m.ty][m.tx]!=='.');
+    chosen = caps.length ? caps[Math.floor(Math.random()*caps.length)] : moves[Math.floor(Math.random()*moves.length)];
+  }
+  else { // hard
+    let vals={'p':1,'n':3,'b':3,'r':5,'q':9,'k':1000}; let best=-1;
+    for(let m of moves){
+      if(game[m.ty][m.tx]!==''){
+        let v = vals[game[m.ty][m.tx].toLowerCase()]||0;
+        if(v>best){ best=v; chosen=m; }
+      }
+    }
+    if(!chosen) chosen = moves[Math.floor(Math.random()*moves.length)];
+  }
+
+  let captured=game[chosen.ty][chosen.tx]; game[chosen.ty][chosen.tx]=game[chosen.y][chosen.x]; game[chosen.y][chosen.x]='.'; renderBoard();
+
+  if(!allGoneMode && captured.toLowerCase()==='k'){ gameOver=true; alert("AI wins! King captured."); updateStatus(); return; }
+  if(allGoneMode && countPieces('w')===0){ gameOver=true; alert("Black wins! All White pieces gone."); stats['all_'+aiDifficulty].wins++; saveStats(); updateStatus(); return; }
+  if(allGoneMode && countPieces('b')===0){ gameOver=true; alert("White wins! All Black pieces gone."); stats['all_'+aiDifficulty].wins++; saveStats(); updateStatus(); return; }
+
+  turn='w'; updateStatus();
+}
+
+// Buttons
+btnRestart.addEventListener('click',()=>{initGame(); gameOver=false;});
+btnAI.addEventListener('click',()=>{
+  mode='ai';
+  allGoneMode=false;
+  aiDifficulty=prompt("Select AI difficulty: easy, medium, hard","easy")||"easy";
+  initGame();
+});
+btnFriend.addEventListener('click',()=>{mode='friend'; allGoneMode=false; initGame();});
+btnAllGone.addEventListener('click',()=>{
+  mode='ai';
+  allGoneMode=true;
+  aiDifficulty=prompt("Select AI difficulty: easy, medium, hard","easy")||"easy";
+  initGame();
+});
+btnSettings.addEventListener('click',()=>{
+  settingsPanel.style.display='block';
+  statsDiv.innerHTML=`
+    Classic Easy: ${stats.easy.played} played, ${stats.easy.wins} wins<br>
+    Classic Medium: ${stats.medium.played} played, ${stats.medium.wins} wins<br>
+    Classic Hard: ${stats.hard.played} played, ${stats.hard.wins} wins<br>
+    All Tokens Easy: ${stats.all_easy.played} played, ${stats.all_easy.wins} wins<br>
+    All Tokens Medium: ${stats.all_medium.played} played, ${stats.all_medium.wins} wins<br>
+    All Tokens Hard: ${stats.all_hard.played} played, ${stats.all_hard.wins} wins
+  `;
+});
+btnCloseSettings.addEventListener('click',()=>{settingsPanel.style.display='none';});
+
+initGame();
+</script>
+</body>
+</html>
